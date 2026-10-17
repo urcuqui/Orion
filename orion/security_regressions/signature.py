@@ -5,6 +5,11 @@ It is NOT a copy of the experiment configuration — it captures just enough
 context to distinguish one security failure from another (attack, target,
 criterion, boundary, capability, security effect). Fields are attack-family
 aware; absent dimensions are simply omitted rather than invented.
+
+The signature describes the ORIGINAL security failure (the thing a Regression
+exists to keep from reappearing) — never the mitigated Retest state. Callers
+must pass the original, pre-mitigation attack evidence (and/or the Finding
+that recorded it), not a Retest record.
 """
 from __future__ import annotations
 
@@ -34,12 +39,78 @@ _EFFECT_BY_FAMILY = {
 }
 
 
+def normalize_boundary(value: Optional[str]) -> str:
+    """The one place a structured boundary name is normalized (e.g. "Tool
+    Authorization" -> "tool_authorization"). Already-normalized values pass
+    through unchanged. Do not reimplement this per page/service."""
+    if not value:
+        return ""
+    return value.strip().lower().replace(" ", "_").replace("-", "_")
+
+
+def _boundary_gate(crossing: Optional[str]) -> str:
+    """Extract the security gate from a crossing value, but ONLY when its format
+    is unambiguous:
+
+        - no separator at all -> the value already IS the boundary name.
+        - exactly one "<Gate> -> <Dest>" hop -> the gate is the first segment.
+
+    A longer, multi-hop string (e.g. the full trust path) is never parsed
+    positionally — guessing a boundary from where it sits in an arbitrary chain
+    is exactly the bug this normalizes away. Callers fall back to the next,
+    more structured source instead.
+    """
+    if not crossing:
+        return ""
+    sep = "→" if "→" in crossing else ("->" if "->" in crossing else None)
+    if sep is None:
+        return normalize_boundary(crossing)
+    parts = [p.strip() for p in crossing.split(sep) if p.strip()]
+    if len(parts) != 2:
+        return ""
+    return normalize_boundary(parts[0])
+
+
+def _resolve_boundary(attack, finding, original_record) -> str:
+    """Structured-data priority, never inferred from textual position in the
+    full trust path:
+
+        1. Finding.boundary_crossed (already the specific crossed segment)
+        2. The original attack evidence's structured boundary crossing
+        3. The AttackDefinition's declared security boundary
+        4. Parsing a crossing string, only in its one documented format
+    """
+    boundary_crossed = getattr(finding, "boundary_crossed", None) if finding is not None else None
+    gate = _boundary_gate(boundary_crossed)
+    if gate:
+        return gate
+
+    if original_record is not None:
+        params = getattr(original_record, "parameters", None) or {}
+        adv = getattr(original_record, "adversarial_result", None) or {}
+        crossing = params.get("boundary_crossing") or adv.get("boundary_crossing")
+        gate = _boundary_gate(crossing)
+        if gate:
+            return gate
+
+    if attack is not None and attack.security_boundaries:
+        gate = attack.security_boundaries[0].get("from")
+        if gate:
+            return normalize_boundary(gate)
+
+    return ""
+
+
 def build_success_signature(attack_id: str, target: str, criterion: str,
-                            record=None) -> Dict[str, Any]:
+                            original_record: Any = None, *,
+                            finding: Any = None) -> Dict[str, Any]:
     """Normalize a reproduced criterion into a SuccessSignature.
 
-    ``record`` (a retest/attack ExperimentRecord) supplies the agentic boundary /
-    capability when available. Only present dimensions are included.
+    ``original_record`` is the ORIGINAL (pre-mitigation) attack ExperimentRecord
+    — not the Retest. ``finding`` supplies the structured ``boundary_crossed``
+    when available, taking priority over inference from the run's evidence.
+    Only dimensions actually present in the structured data are included; an
+    unavailable optional dimension is omitted, never invented.
     """
     attack = CAT.get(attack_id)
     family = attack.family if attack else ""
@@ -49,14 +120,11 @@ def build_success_signature(attack_id: str, target: str, criterion: str,
         "criterion": criterion,
         "security_effect": _EFFECT_BY_CRITERION.get(criterion) or _EFFECT_BY_FAMILY.get(family, "security_impact"),
     }
-    # Agentic / GenAI add boundary + capability when the evidence has them.
-    adv = (getattr(record, "adversarial_result", None) or {}) if record is not None else {}
-    params = (getattr(record, "parameters", None) or {}) if record is not None else {}
     if family in ("agentic_ai", "generative_ai"):
-        boundary = params.get("boundary_crossing") or ""
-        # Prefer the crossed boundary's gate (e.g. "Tool Authorization").
-        if "→" in boundary:
-            sig["boundary"] = boundary.split("→")[0].strip().lower().replace(" ", "_")
+        boundary = _resolve_boundary(attack, finding, original_record)
+        if boundary:
+            sig["boundary"] = boundary
+        adv = (getattr(original_record, "adversarial_result", None) or {}) if original_record is not None else {}
         tool = adv.get("privileged_tool_requested")
         if tool:
             sig["capability"] = tool

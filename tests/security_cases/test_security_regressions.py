@@ -159,3 +159,198 @@ def test_status_can_be_disabled_and_archived(tmp_path):
     assert SR.set_status(reg.regression_id, "ARCHIVED", str(tmp_path)).status == "ARCHIVED"
     with pytest.raises(SR.RegressionError):
         SR.set_status(reg.regression_id, "BOGUS", str(tmp_path))
+
+
+# ------------------- §47 lifecycle enforcement during execution ------------- #
+def test_active_regression_executes(tmp_path):
+    reg = SR.create_from_finding(_mitigated(tmp_path), str(tmp_path))
+    assert reg.status == SR.ACTIVE
+    res = SR.run_regression(reg.regression_id, str(tmp_path))
+    assert res.result in ("PASS", "FAIL", "ERROR")           # executed, not rejected
+
+
+def test_disabled_regression_cannot_execute(tmp_path, monkeypatch):
+    reg = SR.create_from_finding(_mitigated(tmp_path), str(tmp_path))
+    SR.set_status(reg.regression_id, SR.DISABLED, str(tmp_path))
+
+    calls = []
+    monkeypatch.setattr(SR.service, "_execute", lambda *a, **k: calls.append(1), raising=True)
+
+    with pytest.raises(SR.RegressionStatusError):
+        SR.run_regression(reg.regression_id, str(tmp_path))
+    assert calls == []                                        # attack runner never invoked
+    assert SR.get(reg.regression_id, str(tmp_path)).last_run_id is None   # no new Run
+    assert SR.RegressionRepository(str(tmp_path)).load_result(reg.regression_id) is None  # no Evidence/result
+
+
+def test_archived_regression_cannot_execute(tmp_path, monkeypatch):
+    reg = SR.create_from_finding(_mitigated(tmp_path), str(tmp_path))
+    SR.set_status(reg.regression_id, SR.ARCHIVED, str(tmp_path))
+
+    calls = []
+    monkeypatch.setattr(SR.service, "_execute", lambda *a, **k: calls.append(1), raising=True)
+
+    with pytest.raises(SR.RegressionStatusError):
+        SR.run_regression(reg.regression_id, str(tmp_path))
+    assert calls == []
+    assert SR.get(reg.regression_id, str(tmp_path)).last_run_id is None
+    assert SR.RegressionRepository(str(tmp_path)).load_result(reg.regression_id) is None
+
+
+# ------------------- §48 SuccessSignature from original evidence ------------ #
+def test_signature_derived_from_original_attack_not_retest(tmp_path):
+    fid = _mitigated(tmp_path)
+    finding = F.load_finding(fid, str(tmp_path))
+    reg = SR.create_from_finding(fid, str(tmp_path))
+
+    # The security boundary and capability come from the ORIGINAL (unmitigated)
+    # attack, and must still be present after the control blocked the retest —
+    # a retest-derived signature would have lost them (nothing was crossed).
+    assert reg.success_signature["criterion"] == "unauthorized_privileged_tool_execution"
+    assert reg.success_signature["boundary"] == "tool_authorization"
+    assert reg.success_signature["capability"] == "admin_export"
+    assert reg.success_signature["tool"] == "admin_export"
+
+    # Expected state stays retest-derived and is a distinct object from the signature.
+    assert reg.expected_security_state == {"authorization_decision": "DENY",
+                                           "tool_executed": False, "security_impact": False}
+    assert reg.source_attack_run_id == finding.evidence_refs[0]
+    assert reg.source_attack_run_id != reg.source_retest_run_id
+
+
+def test_missing_original_evidence_fails_closed(tmp_path):
+    fid = _mitigated(tmp_path)
+    finding = F.load_finding(fid, str(tmp_path))
+    import shutil
+    shutil.rmtree(str(tmp_path / finding.evidence_refs[0]))     # original attack evidence vanished
+    with pytest.raises(SR.PreconditionError):
+        SR.create_from_finding(fid, str(tmp_path))
+
+
+# ------------------------ §49 boundary structured sourcing ------------------ #
+class _FindingLike:
+    def __init__(self, boundary_crossed=""):
+        self.boundary_crossed = boundary_crossed
+
+
+class _RecordLike:
+    def __init__(self, parameters=None, adversarial_result=None):
+        self.parameters = parameters or {}
+        self.adversarial_result = adversarial_result or {}
+
+
+def test_boundary_prefers_finding_structured_field():
+    finding = _FindingLike(boundary_crossed="Tool Authorization → Privileged Capability")
+    sig = SR.build_success_signature("ORN-ATTACK-PI-002", "agent-a",
+                                     "unauthorized_privileged_tool_execution", finding=finding)
+    assert sig["boundary"] == "tool_authorization"
+
+
+def test_boundary_never_parsed_from_an_arbitrary_full_trust_path():
+    # A full, multi-hop trust path (not the documented 2-segment crossing) must
+    # never be sliced positionally — that previously produced "external_content"
+    # for what is actually a tool_authorization boundary.
+    rec = _RecordLike(parameters={"boundary_crossing":
+                                  "External Content → Retrieval → Agent → Tool Authorization → Privileged Tool"})
+    sig = SR.build_success_signature("ORN-ATTACK-PI-002", "agent-a",
+                                     "unauthorized_privileged_tool_execution", rec)
+    assert sig["boundary"] == "tool_authorization"      # recovered from AttackDefinition instead
+    assert sig["boundary"] != "external_content"
+
+
+def test_boundary_falls_back_to_attack_definition_when_no_run_evidence():
+    sig = SR.build_success_signature("ORN-ATTACK-PI-002", "agent-a",
+                                     "unauthorized_privileged_tool_execution")
+    assert sig["boundary"] == "tool_authorization"
+
+
+def test_boundary_normalization_is_idempotent():
+    assert SR.normalize_boundary("Tool Authorization") == "tool_authorization"
+    assert SR.normalize_boundary("tool_authorization") == "tool_authorization"
+
+
+# --------------------------- §50 signature stability ------------------------- #
+def test_signature_stable_against_volatile_fields():
+    rec_a = _RecordLike(parameters={"boundary_crossing": "Tool Authorization → Privileged Capability",
+                                    "trace_id": "trace-1", "timestamp": "2026-01-01T00:00:00Z"},
+                        adversarial_result={"privileged_tool_requested": "admin_export"})
+    rec_b = _RecordLike(parameters={"boundary_crossing": "Tool Authorization → Privileged Capability",
+                                    "trace_id": "trace-2", "timestamp": "2026-06-01T00:00:00Z"},
+                        adversarial_result={"privileged_tool_requested": "admin_export"})
+    s1 = SR.build_success_signature("ORN-ATTACK-PI-002", "agent-a",
+                                    "unauthorized_privileged_tool_execution", rec_a)
+    s2 = SR.build_success_signature("ORN-ATTACK-PI-002", "agent-a",
+                                    "unauthorized_privileged_tool_execution", rec_b)
+    assert SR.signature_key(s1) == SR.signature_key(s2)
+
+
+def test_signature_changes_for_different_target():
+    rec = _RecordLike(adversarial_result={"privileged_tool_requested": "admin_export"})
+    s1 = SR.build_success_signature("ORN-ATTACK-PI-002", "agent-a",
+                                    "unauthorized_privileged_tool_execution", rec)
+    s2 = SR.build_success_signature("ORN-ATTACK-PI-002", "agent-b",
+                                    "unauthorized_privileged_tool_execution", rec)
+    assert SR.signature_key(s1) != SR.signature_key(s2)
+
+
+def test_signature_changes_for_different_capability():
+    rec_a = _RecordLike(adversarial_result={"privileged_tool_requested": "admin_export"})
+    rec_b = _RecordLike(adversarial_result={"privileged_tool_requested": "search_logs"})
+    s1 = SR.build_success_signature("ORN-ATTACK-PI-002", "agent-a",
+                                    "unauthorized_privileged_tool_execution", rec_a)
+    s2 = SR.build_success_signature("ORN-ATTACK-PI-002", "agent-a",
+                                    "unauthorized_privileged_tool_execution", rec_b)
+    assert SR.signature_key(s1) != SR.signature_key(s2)
+
+
+# ------------------------ §51 multiple retests selection --------------------- #
+def test_multiple_retests_select_the_effective_one(tmp_path):
+    ws = EXP.create_from_plan(_plan(tmp_path), base_dir=str(tmp_path))
+    EXP.run_agentic_attack(ws, {"attack_id": "ORN-ATTACK-PI-002"}, base_dir=str(tmp_path))
+    m = EXP.measure(ws, base_dir=str(tmp_path))
+    fid = m["finding_id"]
+
+    # Retest #1: a control with no implementation for this attack -> INEFFECTIVE.
+    EXP.apply_defense(ws, {"control_id": "adversarial_training"}, base_dir=str(tmp_path))
+    r1 = EXP.retest(ws, base_dir=str(tmp_path))
+    ineffective_retest_run_id = r1["retest_run_id"]
+
+    f_after_r1 = F.load_finding(fid, str(tmp_path))
+    assert f_after_r1.retest_status == "INEFFECTIVE"
+
+    # Retest #2: the real control -> EFFECTIVE.
+    EXP.apply_defense(ws, {"control_id": "tool_authorization"}, base_dir=str(tmp_path))
+    r2 = EXP.retest(ws, base_dir=str(tmp_path))
+    effective_retest_run_id = r2["retest_run_id"]
+
+    f_after_r2 = F.load_finding(fid, str(tmp_path))
+    assert f_after_r2.retest_status == "EFFECTIVE"
+    assert ineffective_retest_run_id != effective_retest_run_id
+    assert set(f_after_r2.retest_refs) == {ineffective_retest_run_id, effective_retest_run_id}
+
+    reg = SR.create_from_finding(fid, str(tmp_path))
+    assert reg.source_retest_run_id == effective_retest_run_id
+    assert reg.source_retest_run_id != ineffective_retest_run_id
+
+    retest_record = EvidenceStore(str(tmp_path)).load(effective_retest_run_id)
+    assert reg.expected_security_state == SR.build_expected_state(retest_record)
+
+
+# -------------------- §52 influence + authorization DENY -> PASS ------------ #
+def test_influence_with_authorization_deny_still_passes(tmp_path):
+    reg = SR.create_from_finding(_mitigated(tmp_path), str(tmp_path))
+    res = SR.run_regression(reg.regression_id, str(tmp_path))
+    assert res.observed["agent_influenced"] is True
+    assert res.observed["authorization_decision"] == "DENY"
+    assert res.observed["tool_executed"] is False
+    assert res.result == "PASS"
+
+
+# ----------------------- §53 execution never mutates Finding ---------------- #
+def test_regression_execution_does_not_mutate_finding(tmp_path):
+    fid = _mitigated(tmp_path)
+    before = F.load_finding(fid, str(tmp_path)).to_dict()
+    reg = SR.create_from_finding(fid, str(tmp_path))
+    SR.run_regression(reg.regression_id, str(tmp_path))
+    after = F.load_finding(fid, str(tmp_path)).to_dict()
+    assert before == after

@@ -8,9 +8,9 @@ from typing import Any, Dict, Optional, Tuple
 
 from orion.catalog import attacks as CAT
 from orion.evidence import EvidenceStore
-from orion.findings import EFFECTIVE, load_finding
+from orion.findings import EFFECTIVE, classify_control, load_finding
 from orion.security_regressions.model import (
-    SecurityRegression, RegressionResult, evaluate_expected_vs_observed, ERROR)
+    ACTIVE, SecurityRegression, RegressionResult, evaluate_expected_vs_observed, ERROR)
 from orion.security_regressions.repository import RegressionRepository
 from orion.security_regressions.signature import build_success_signature
 
@@ -21,6 +21,11 @@ class RegressionError(Exception):
 
 class PreconditionError(RegressionError):
     """A Finding is not eligible to become a Security Regression."""
+
+
+class RegressionStatusError(RegressionError):
+    """A regression exists but its lifecycle status forbids this operation
+    (e.g. manual execution of a DISABLED or ARCHIVED regression)."""
 
 
 # --------------------------- security-state views --------------------------- #
@@ -66,6 +71,88 @@ def can_create_regression(finding) -> Tuple[bool, str]:
     return True, "Eligible: control verified by an effective retest."
 
 
+# ------------------------- original / retest resolution ---------------------- #
+def _asr(record) -> float:
+    v = ((record.metrics or {}).get("attack_success_rate", {}) or {}).get("value")
+    if v is not None:
+        return float(v)
+    return 1.0 if record.status == "ATTACK_SUCCESS" else 0.0
+
+
+def resolve_original_attack_evidence(finding, store: EvidenceStore) -> Tuple[str, Any]:
+    """Resolve the ORIGINAL (pre-mitigation) attack Run backing a Finding.
+
+    ``finding.evidence_refs`` holds only attack runs recorded before any Retest
+    (Retests are appended to ``retest_refs``, never to ``evidence_refs``), so the
+    first ref is the original security failure a SuccessSignature must describe.
+    The mitigated Retest record must never be used as this source.
+    """
+    run_id = finding.evidence_refs[0] if finding.evidence_refs else None
+    if not run_id:
+        raise PreconditionError(f"Finding {finding.id} has no original attack evidence to sign.")
+    try:
+        record = store.load(run_id)
+    except FileNotFoundError as exc:
+        raise PreconditionError(
+            f"Original attack evidence {run_id} for finding {finding.id} is missing "
+            "from the evidence store.") from exc
+    return run_id, record
+
+
+def resolve_effective_retest(finding, store: EvidenceStore) -> Tuple[str, Any]:
+    """Resolve the specific Retest record that actually backs the Finding's
+    current ``EFFECTIVE`` ``retest_status`` — not simply the first or last
+    Retest on file, since an earlier control attempt may have been
+    INEFFECTIVE before a later one succeeded.
+
+    Preference order: explicit provenance linking the Retest to the Finding's
+    current ``applied_control``, most recent first; each candidate's own
+    evidence is independently re-verified (before/after attack-success rate)
+    to confirm it is actually EFFECTIVE rather than trusted by position alone.
+    """
+    if not finding.retest_refs:
+        raise PreconditionError(f"Finding {finding.id} has no retest evidence.")
+
+    original_run_id = finding.evidence_refs[0] if finding.evidence_refs else None
+    original_record = None
+    if original_run_id:
+        try:
+            original_record = store.load(original_run_id)
+        except FileNotFoundError:
+            original_record = None
+    before_rate = _asr(original_record) if original_record is not None else None
+
+    candidates = []
+    for run_id in reversed(finding.retest_refs):          # most recent first
+        try:
+            record = store.load(run_id)
+        except FileNotFoundError:
+            continue
+        candidates.append((run_id, record))
+
+    def _is_effective(record) -> bool:
+        if before_rate is None:
+            return True  # no original rate to compare against; trust the record's own status
+        return classify_control(before_rate, _asr(record)) == EFFECTIVE
+
+    # 1. Explicit provenance match (the Retest that retested the active control)
+    #    AND independently verified EFFECTIVE.
+    for run_id, record in candidates:
+        prov = record.provenance or {}
+        control_matches = prov.get("defense_control") == finding.applied_control
+        if control_matches and _is_effective(record):
+            return run_id, record
+
+    # 2. No provenance-matched + verified candidate: fall back to the most
+    #    recent Retest whose own evidence independently verifies EFFECTIVE.
+    for run_id, record in candidates:
+        if _is_effective(record):
+            return run_id, record
+
+    raise PreconditionError(
+        f"No retest evidence for finding {finding.id} corroborates its EFFECTIVE status.")
+
+
 # ------------------------------- operations --------------------------------- #
 def create_from_finding(finding_id: str, base_dir: str = "artifacts",
                         name: Optional[str] = None) -> SecurityRegression:
@@ -74,16 +161,19 @@ def create_from_finding(finding_id: str, base_dir: str = "artifacts",
     if not ok:
         raise PreconditionError(reason)
 
+    store = EvidenceStore(base_dir)
     attack = CAT.get(finding.attack_id)
     family = (attack.family if attack else finding.family) or ""
     target = finding.affected_target or "unknown"
     prov = finding.provenance or {}
-    retest_run_id = finding.retest_refs[0]
-    retest_record = EvidenceStore(base_dir).load(retest_run_id)
+
+    original_run_id, original_record = resolve_original_attack_evidence(finding, store)
+    retest_run_id, retest_record = resolve_effective_retest(finding, store)
 
     criterion = _primary_criterion(finding, attack)
     expected = build_expected_state(retest_record)
-    signature = build_success_signature(finding.attack_id, target, criterion, retest_record)
+    signature = build_success_signature(finding.attack_id, target, criterion,
+                                        original_record, finding=finding)
 
     reg = SecurityRegression(
         name=name or f"Keep {criterion} blocked on {target}",
@@ -92,7 +182,7 @@ def create_from_finding(finding_id: str, base_dir: str = "artifacts",
         assessment_id=prov.get("assessment_id"),
         source_finding_id=finding.id,
         source_experiment_id=prov.get("experiment_workspace_id"),
-        source_attack_run_id=(finding.evidence_refs[0] if finding.evidence_refs else None),
+        source_attack_run_id=original_run_id,
         source_retest_run_id=retest_run_id,
         source_control_ref=finding.applied_control,
         control_implementation=finding.control_implementation,
@@ -135,6 +225,9 @@ def run_regression(regression_id: str, base_dir: str = "artifacts") -> Regressio
     reg = repo.get(regression_id)
     if reg is None:
         raise RegressionError("unknown regression")
+    if reg.status != ACTIVE:
+        raise RegressionStatusError(
+            f"Regression {reg.regression_id} is {reg.status} and cannot be executed.")
 
     provenance = {
         "source_type": "security_regression", "regression_id": reg.regression_id,

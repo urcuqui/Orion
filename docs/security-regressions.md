@@ -55,6 +55,37 @@ A regression is created from a Finding that has:
 `PARTIALLY_EFFECTIVE` / `INEFFECTIVE` retests cannot produce a regression in v1.
 Regressions are never created automatically from every Finding.
 
+### Selecting the Retest when more than one exists
+
+A Finding can accumulate more than one Retest (e.g. an earlier control attempt
+that turned out `INEFFECTIVE`, before a later control succeeded). Regression
+creation does **not** use the first Retest recorded — it resolves **the
+specific Retest that actually backs the Finding's current `EFFECTIVE` status**:
+preferring the Retest whose provenance links it to the Finding's current
+`applied_control`, and independently re-verifying its before/after
+attack-success rate rather than trusting list position alone.
+
+## Success Signature vs Expected Security State
+
+These two objects look similar but describe **opposite moments** and must never
+be confused:
+
+- **Success Signature** = the identity of the **original security failure** —
+  derived from the **original (pre-mitigation) attack evidence**, via the
+  Finding that recorded it. It is what the Regression exists to keep from
+  reappearing, and it does not change just because a retest later succeeded.
+- **Expected Security State** = the protected behavior demonstrated by the
+  **effective Retest** — what must still hold today.
+
+```
+Finding → original attack Run → original Evidence → Success Signature
+Finding → effective Retest     → retest Evidence    → Expected Security State
+```
+
+A Regression keeps references to **both** the original attack Run
+(`source_attack_run_id`) and the effective Retest Run (`source_retest_run_id`) —
+never only one.
+
 ## Success Signature
 
 A deterministic, normalized identity for the reproduced security condition — just
@@ -119,13 +150,33 @@ criteria happened in different runs. Each criterion carries its own statistics:
 Legacy Findings without per-criterion evidence load fine and are reported as
 `UNKNOWN / LEGACY` rather than silently reinterpreted.
 
+## Lifecycle status
+
+A Regression definition has one of three statuses, independent of its latest
+PASS/FAIL/ERROR execution result:
+
+| Status | Meaning |
+| --- | --- |
+| `ACTIVE` | executable — manual execution is allowed |
+| `DISABLED` | retained, but execution is blocked until reactivated |
+| `ARCHIVED` | retained for reference only; execution is permanently blocked |
+
+Only `ACTIVE` regressions can execute. The backend enforces this
+unconditionally — `run_regression(...)` fails closed (raises before the attack
+runner is invoked, producing no new Run or Evidence) for `DISABLED` /
+`ARCHIVED` regressions, whether the request comes from the UI, the
+`POST /api/regressions/<id>/run` endpoint, or the CLI. The UI only hides the
+`[ RUN REGRESSION ]` button as a courtesy; it is never the enforcement point.
+
 ## Manual execution
 
 Execution is always **operator-initiated** and reuses the existing
 experiment/attack/run/evidence system — there is no second attack engine. Each
 run creates normal, auditable evidence.
 
-UI: **Regressions → open a regression → `[ RUN REGRESSION ]`**.
+UI: **Regressions → open a regression → `[ RUN REGRESSION ]`** (ACTIVE only;
+DISABLED/ARCHIVED regressions show their status and why execution is
+unavailable instead).
 
 CLI:
 

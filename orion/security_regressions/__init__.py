@@ -12,21 +12,23 @@ from orion.security_regressions.model import (
     PASS, FAIL, ERROR, evaluate_expected_vs_observed, new_regression_id,
 )
 from orion.security_regressions.signature import (
-    build_success_signature, signature_key, signature_hash,
+    build_success_signature, signature_key, signature_hash, normalize_boundary,
 )
 from orion.security_regressions.repository import RegressionRepository
 from orion.security_regressions.service import (
     create_from_finding, get, list_regressions, run_regression, set_status,
     can_create_regression, observed_security_state, build_expected_state,
-    RegressionError, PreconditionError,
+    resolve_original_attack_evidence, resolve_effective_retest,
+    RegressionError, PreconditionError, RegressionStatusError,
 )
 
 __all__ = [
     "SecurityRegression", "RegressionResult", "ACTIVE", "DISABLED", "ARCHIVED",
     "PASS", "FAIL", "ERROR", "evaluate_expected_vs_observed", "new_regression_id",
-    "build_success_signature", "signature_key", "signature_hash",
+    "build_success_signature", "signature_key", "signature_hash", "normalize_boundary",
     "RegressionRepository",
     "create_from_finding", "get", "list_regressions", "run_regression", "set_status",
     "can_create_regression", "observed_security_state", "build_expected_state",
-    "RegressionError", "PreconditionError",
+    "resolve_original_attack_evidence", "resolve_effective_retest",
+    "RegressionError", "PreconditionError", "RegressionStatusError",
 ]

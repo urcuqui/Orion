@@ -731,10 +731,14 @@ def api_regression_create():
 
 @api_bp.post("/regressions/<regression_id>/run")
 def api_regression_run(regression_id):
-    """Manually execute a regression (operator-initiated only)."""
+    """Manually execute a regression (operator-initiated only). Only ACTIVE
+    regressions may run; DISABLED/ARCHIVED are a normal lifecycle rejection,
+    never a server error."""
     from orion import security_regressions as SR
     try:
         result = SR.run_regression(regression_id, ARTIFACT_DIR)
+    except SR.RegressionStatusError as exc:
+        return jsonify({"error": str(exc)}), 409
     except SR.RegressionError as exc:
         return jsonify({"error": str(exc)}), 404
     return jsonify(result.to_dict())

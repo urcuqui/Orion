@@ -27,26 +27,34 @@ Verified by retest  {{ regression.source_retest_run_id or '—' }}</pre>
 
   {# ---- Expected protected security state ---- #}
   <div class="panel">
-    <div class="panel-title">Expected security behavior</div>
-    <p class="sub">The security boundary that must still hold. Model/agent influence is allowed to vary;
-      the control is what must remain effective.</p>
+    <div class="panel-title">EXPECTED PROTECTED BEHAVIOR — Expected Security State</div>
+    <p class="sub">The security boundary that must still hold, demonstrated by the effective retest. Model/agent
+      influence is allowed to vary; the control is what must remain effective.</p>
     <pre class="term-pre">{% for k, v in regression.expected_security_state.items() %}{{ '%-22s'|format(k) }} {{ v }}
 {% endfor %}</pre>
   </div>
 
   {# ---- Manual execution ---- #}
   <div class="panel">
-    <div class="panel-title">Run regression</div>
+    <div class="panel-title">Manual execution</div>
+    {% if regression.status == 'ACTIVE' %}
     <p class="sub">Operator-initiated only. Each run creates normal auditable evidence.</p>
     <div class="btn-row">
       <button class="btn btn-red" id="run-reg" data-id="{{ regression.regression_id }}">[ RUN REGRESSION ]</button>
     </div>
+    {% elif regression.status == 'DISABLED' %}
+    <div class="state">REGRESSION DISABLED<br>Manual execution is unavailable until this regression is reactivated.</div>
+    {% elif regression.status == 'ARCHIVED' %}
+    <div class="state">REGRESSION ARCHIVED<br>Archived regressions are retained for reference and cannot be executed.</div>
+    {% endif %}
     <div id="reg-result" style="margin-top:0.8rem;"></div>
   </div>
 
   {# ---- Success signature ---- #}
   <div class="panel">
-    <div class="panel-title">Success signature</div>
+    <div class="panel-title">ORIGINAL SECURITY FAILURE — Success Signature</div>
+    <p class="sub">The identity of the original security failure, derived from the original attack evidence. This
+      does not change when a retest succeeds.</p>
     <pre class="term-pre">{% for k, v in regression.success_signature.items() %}{{ '%-18s'|format(k) }} {{ v }}
 {% endfor %}</pre>
   </div>
