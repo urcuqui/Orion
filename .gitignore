@@ -85,6 +85,8 @@ D:/
 
 # Orion-generated evidence (reproducible; regenerate with `python -m orion run ...`)
 artifacts/
-reports/
+# Top-level recon screenshot output only (./reports/screenshots/...) — anchored to the
+# repo root so it does NOT also match the orion/reports/ *source* package.
+/reports/
 static/adversarial/*.png
 artifacts_backup_*/
