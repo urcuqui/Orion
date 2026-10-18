@@ -56,4 +56,13 @@
     if (data.get('proposal_id').trim()) payload.proposal_id = data.get('proposal_id').trim();
     write(form, 'POST', '/api/assessments/' + encodeURIComponent(form.dataset.id) + '/experiments', payload, result => '/experiment/' + encodeURIComponent(result.experiment_workspace_id));
   }));
+  document.querySelectorAll('[data-report-btn]').forEach(btn => btn.addEventListener('click', async () => {
+    const host = document.querySelector('[data-report-result]');
+    const format = btn.dataset.format;
+    Orion.setState(host, 'running', 'generating ' + format + ' report…');
+    try {
+      const res = await Orion.postJSON('/api/assessments/' + encodeURIComponent(btn.dataset.id) + '/report', {format});
+      host.innerHTML = `<p class="sub">Written to <span class="mono">${Orion.esc(res.path)}</span></p><pre class="term-pre">${Orion.esc(res.content)}</pre>`;
+    } catch (error) { Orion.setState(host, 'error', '[x] ' + error.message); }
+  }));
 })();

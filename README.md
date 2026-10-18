@@ -443,6 +443,31 @@ system), compares observed vs expected security state, and returns
 trends and notifications are intentionally out of scope. See
 [docs/security-regressions.md](docs/security-regressions.md).
 
+## Basic Assessment Report
+
+The Community workflow ends with a factual, evidence-backed export of an
+Assessment's current state:
+
+```
+Assessment → Experiments → Findings → Controls → Retest →
+Manual Security Regression → Basic Assessment Report
+```
+
+`[ MARKDOWN ]` / `[ JSON ]` on the Assessment page (or
+`orion assessment report ORN-ASMT-… --format markdown|json`) render the exact
+same normalized, read-only `AssessmentReport` model — it never computes a new
+Finding, severity, corroboration result or Regression outcome, and generation
+is always explicit (never scheduled, never auto-triggered). Assessment
+`COMPLETED` is never reported as `SECURE`; a Control is never reported as
+`EFFECTIVE` without a Retest; missing or corrupt references are listed
+explicitly rather than hidden. See
+[docs/basic-assessment-report.md](docs/basic-assessment-report.md).
+
+This completes the planned Orion Community feature set: **Assessment + Manual
+Security Regression Tests + Basic Assessment Report**. Continuous/scheduled
+regressions, regression history/trends, professional/executive reporting,
+collaboration and governance features belong to the future commercial layer.
+
 ## 7. AI agents
 
 Agents are **copilots, not oracles**: they plan and explain; metrics and

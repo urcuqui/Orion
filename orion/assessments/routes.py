@@ -54,6 +54,35 @@ def api_integrity(assessment_id):
     return api_result(lambda: service().validate_integrity(assessment_id))
 
 
+@assessment_bp.get('/api/assessments/<assessment_id>/report')
+def api_report_preview(assessment_id):
+    """Read-only normalized report preview — never writes a report artifact."""
+    def result():
+        from orion.reports import build_assessment_report
+        from orion.integrations.flask_blueprint import ARTIFACT_DIR
+        return build_assessment_report(assessment_id, ARTIFACT_DIR).to_dict()
+    return api_result(result)
+
+
+@assessment_bp.post('/api/assessments/<assessment_id>/report')
+def api_report_generate(assessment_id):
+    """Explicit, operator-initiated report generation. Writes the report
+    artifact under the Assessment's own directory; never scheduled, never
+    triggered by other domain mutations."""
+    def result():
+        from orion.reports import build_assessment_report, render_markdown, render_json, write_report
+        from orion.integrations.flask_blueprint import ARTIFACT_DIR
+        payload = request.get_json(silent=True) or {}
+        fmt = (payload.get('format') or 'markdown').lower()
+        if fmt not in ('markdown', 'json'):
+            raise ValueError("format must be 'markdown' or 'json'")
+        report = build_assessment_report(assessment_id, ARTIFACT_DIR)
+        path = write_report(report, fmt, ARTIFACT_DIR)
+        content = render_markdown(report) if fmt == 'markdown' else render_json(report)
+        return {'assessment_id': assessment_id, 'format': fmt, 'path': str(path), 'content': content}
+    return api_result(result)
+
+
 @assessment_bp.post('/api/assessments/<assessment_id>/experiments')
 def api_create_experiment(assessment_id):
     def create():
