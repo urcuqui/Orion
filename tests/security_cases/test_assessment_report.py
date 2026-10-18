@@ -95,15 +95,24 @@ def test_control_applied_without_retest_is_not_verified(tmp_path):
     control = report.controls[0]
     assert control["applied_status"] == "APPLIED"
     assert control["verification_status"] == "NOT_VERIFIED"
-    assert report.retests == []                       # no retest evidence yet
+    assert control["retest_result"] is None           # no retest -> no result, never EFFECTIVE
+    assert report.retests == []                        # no retest evidence yet
     md = render_markdown(report)
-    assert "EFFECTIVE" not in md and "MITIGATED" not in md.upper().split("## Limitations")[0].upper().replace(
-        "NOT_VERIFIED", "")
+    # The Control table row must never imply the control was retested, effective or mitigated.
+    controls_block = md.split("### Controls")[1].split("### Retests")[0]
+    control_rows = [ln for ln in controls_block.splitlines()
+                    if ln.startswith("|") and "---" not in ln and "Control |" not in ln]
+    rows_text = " ".join(control_rows).upper().replace("NOT_VERIFIED", "")
+    assert "RETESTED" not in rows_text
+    assert "EFFECTIVE" not in rows_text and "MITIGATED" not in rows_text
+    # And no EFFECTIVE/MITIGATED verdict anywhere in the report body (outside Limitations).
+    body = md.split("## Limitations")[0].upper().replace("NOT_VERIFIED", "")
+    assert "EFFECTIVE" not in md and "MITIGATED" not in body
 
 
 # ------------------------------ §53 effective retest -------------------------- #
 def test_effective_retest_is_reported_from_existing_state(tmp_path):
-    from orion.reports import build_assessment_report
+    from orion.reports import build_assessment_report, render_markdown
     service, a, ws, fid, reg = _mitigated_assessment(tmp_path)
     finding = F.load_finding(fid, str(tmp_path))
     assert finding.retest_status == "EFFECTIVE"
@@ -113,6 +122,134 @@ def test_effective_retest_is_reported_from_existing_state(tmp_path):
     assert len(retest_entries) == 1
     assert retest_entries[0]["result"] == "EFFECTIVE"
     assert retest_entries[0]["retest_run_id"] == finding.retest_refs[0]
+
+    # The Control reflects the Finding's existing EFFECTIVE result via retest_result —
+    # it is RETESTED, never independently "verified"/"mitigated" by the report.
+    control = next(c for c in report.controls if c["finding_id"] == fid)
+    assert control["applied_status"] == "APPLIED"
+    assert control["verification_status"] == "RETESTED"
+    assert control["retest_result"] == "EFFECTIVE"
+    assert "MITIGATED" not in control.values()          # control is never relabeled MITIGATED
+    md = render_markdown(report)
+    controls_block = md.split("### Controls")[1].split("### Retests")[0]
+    assert "RETESTED" in controls_block and "EFFECTIVE" in controls_block
+    assert "MITIGATED" not in controls_block            # the control row never says MITIGATED
+
+
+# --------------------- §53b ineffective retest (RETESTED != EFFECTIVE) -------- #
+def test_ineffective_retest_is_retested_but_not_effective(tmp_path):
+    """A retested control whose retest did NOT work is RETESTED with an
+    INEFFECTIVE result — existence of a Retest never implies effectiveness."""
+    from orion.reports import build_assessment_report, render_markdown
+    service = AssessmentService(tmp_path)
+    a = effort(tmp_path, status="ACTIVE")
+    ws = service.create_experiment(a.assessment_id, plan(tmp_path).plan_id)
+    EXP.run_agentic_attack(ws, {"attack_id": "ORN-ATTACK-PI-002"}, str(tmp_path))
+    m = EXP.measure(ws, str(tmp_path))
+    fid = m["finding_id"]
+    EXP.apply_defense(ws, {"control_id": "output_filtering"}, str(tmp_path))   # does not mitigate PI-002
+    EXP.retest(ws, str(tmp_path))
+
+    finding = F.load_finding(fid, str(tmp_path))
+    assert finding.retest_status == "INEFFECTIVE"       # existing domain result, not recomputed
+
+    report = build_assessment_report(a.assessment_id, str(tmp_path))
+    control = next(c for c in report.controls if c["finding_id"] == fid)
+    assert control["applied_status"] == "APPLIED"
+    assert control["verification_status"] == "RETESTED"  # a retest ran …
+    assert control["retest_result"] == "INEFFECTIVE"     # … and it did not work
+    md = render_markdown(report)
+    controls_block = md.split("### Controls")[1].split("### Retests")[0]
+    assert "INEFFECTIVE" in controls_block
+    # The report must never present this control as effective or mitigated.
+    assert "MITIGATED" not in controls_block
+    # EFFECTIVE must not appear as a standalone token (INEFFECTIVE contains it as a substring).
+    import re
+    assert not re.search(r"(?<!IN)EFFECTIVE", controls_block)
+
+
+# ------------------------- §53c profile normalization ------------------------- #
+def _with_profiles(tmp_path):
+    from orion.context.store import save_profile
+    from orion.context.self_profile import build_self_profile
+    from orion.context.target import build_target_profile
+    from orion.context.environment import build_environment_profile
+    sp = build_self_profile({"system_type": "generative_ai",
+                             "capabilities": {"tools": True, "rag": True, "gradients": False},
+                             "generative_ai": {"fingerprint": {"subtype": "llm_agent"}}})
+    tp = build_target_profile({"name": "Agent", "target_type": "ai_agent", "objective": "summarize",
+                               "security_objective": "no exfil",
+                               "known_interfaces": ["/chat", "/api"], "self_profile_id": sp.self_profile_id})
+    ep = build_environment_profile({"target": "http://agent", "endpoints": ["/chat", "/api/v1"],
+                                    "report_markdown": "langchain openai chromadb mcp"},
+                                   target_reference="http://agent")
+    save_profile(sp.self_profile_id, sp.to_dict(), str(tmp_path))
+    save_profile(tp.target_profile_id, tp.to_dict(), str(tmp_path))
+    save_profile(ep.environment_profile_id, ep.to_dict(), str(tmp_path))
+    a = effort(tmp_path, system_profile_id=sp.self_profile_id, target_id=tp.target_profile_id,
+               environment_id=ep.environment_profile_id)
+    return a, sp, tp, ep
+
+
+def test_profiles_are_normalized_concisely(tmp_path):
+    from orion.reports import build_assessment_report, render_markdown
+    a, sp, tp, ep = _with_profiles(tmp_path)
+    report = build_assessment_report(a.assessment_id, str(tmp_path))
+
+    system = report.profiles["system"]
+    assert system["id"] == sp.self_profile_id            # authoritative identifier retained
+    assert system["system_type"] == "generative_ai"
+    assert system["capabilities"] == ["rag", "tools"]    # enabled only, sorted deterministically
+
+    target = report.profiles["target"]
+    assert target["id"] == tp.target_profile_id
+    assert target["target_type"] == "ai_agent"
+    assert target["interfaces"] == ["/api", "/chat"]     # sorted (order carries no domain meaning)
+
+    environment = report.profiles["environment"]
+    assert environment["id"] == ep.environment_profile_id
+    assert environment["ai_dependencies"] == sorted(environment["ai_dependencies"])
+    assert "MCP server" in environment["mcp_servers"]
+
+    md = render_markdown(report)
+    sys_section = md.split("### System")[1].split("### Target")[0]
+    assert sp.self_profile_id in sys_section
+    assert "| Field | Value |" in sys_section            # rendered as a table, never a raw dict
+    assert "{" not in sys_section and "'" not in sys_section
+
+
+def test_normalized_profile_is_not_the_raw_profile_dump(tmp_path):
+    """The normalized summary must not be the raw Profile.to_dict(): large raw
+    payloads (fingerprints, recon output, nested dependency/trust dicts) stay out."""
+    from orion.reports import build_assessment_report
+    a, sp, tp, ep = _with_profiles(tmp_path)
+    report = build_assessment_report(a.assessment_id, str(tmp_path))
+
+    assert report.profiles["system"] != sp.to_dict()
+    assert report.profiles["target"] != tp.to_dict()
+    assert report.profiles["environment"] != ep.to_dict()
+    # None of the large/raw fields leak into the normalized system/environment summaries.
+    assert "profile" not in report.profiles["system"]          # model fingerprints
+    assert "security_posture" not in report.profiles["system"]
+    for raw_field in ("assets", "trust_relationships", "topology", "findings", "counts", "endpoints"):
+        assert raw_field not in report.profiles["environment"]
+    # ai_dependencies is a concise list of names, never the raw list of dicts.
+    assert all(isinstance(d, str) for d in report.profiles["environment"]["ai_dependencies"])
+
+
+def test_missing_profile_is_unknown_and_tracked(tmp_path):
+    """A referenced-but-unloadable profile normalizes to None (UNKNOWN in
+    Markdown) and is still recorded in unavailable_references — never dropped."""
+    from orion.reports import build_assessment_report, render_markdown
+    a = effort(tmp_path, system_profile_id="ORN-SELF-DEADBEEF")   # valid id, never saved
+    report = build_assessment_report(a.assessment_id, str(tmp_path))
+
+    assert report.profiles["system"] is None
+    assert any(u["type"] == "profile" and u["id"] == "ORN-SELF-DEADBEEF"
+               for u in report.unavailable_references)
+    md = render_markdown(report)
+    sys_section = md.split("### System")[1].split("### Target")[0]
+    assert "UNKNOWN" in sys_section
 
 
 # ------------------------- §54 regression never run --------------------------- #

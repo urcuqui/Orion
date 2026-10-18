@@ -75,14 +75,17 @@ def render_markdown(report: AssessmentReport) -> str:
         out.append("UNKNOWN — scope not defined.")
 
     out.append(_section("System / Target / Environment"))
-    _profile_id_key = {"system": "self_profile_id", "target": "target_profile_id",
-                       "environment": "environment_profile_id"}
-    for kind, prof in r["profiles"].items():
-        if prof is None:
-            out.append(f"- **{kind.title()}**: UNKNOWN")
-        else:
-            pid = prof.get(_profile_id_key.get(kind, ""), "—")
-            out.append(f"- **{kind.title()}**: `{pid}`")
+    profiles = r["profiles"]
+    for kind in ("system", "target", "environment"):
+        if kind not in profiles:
+            continue
+        prof = profiles[kind]
+        out.append(f"\n### {kind.title()}\n")
+        if not prof:
+            out.append("UNKNOWN — profile unavailable.")
+            continue
+        rows = {k.replace("_", " ").title(): v for k, v in prof.items() if k != "kind"}
+        out.append(_kv_table(rows))
 
     out.append(_section("Analysis Context"))
     if r["analysis_context"]:
@@ -150,14 +153,19 @@ def render_markdown(report: AssessmentReport) -> str:
     out.append(_section("Controls and Retests"))
     out.append("### Controls\n")
     if r["controls"]:
-        out.append("| Control | Implementation | Finding | Applied | Verification |")
-        out.append("| --- | --- | --- | --- | --- |")
+        out.append("| Control | Implementation | Finding | Applied Status | "
+                   "Verification Status | Retest Result | Retest Run |")
+        out.append("| --- | --- | --- | --- | --- | --- | --- |")
         for c in r["controls"]:
+            retest_result = c.get("retest_result") or "— (no retest)"
             out.append(f"| {_fmt(c['control_ref'])} | {_fmt(c['implementation'])} | "
-                      f"{_fmt(c['finding_id'])} | {c['applied_status']} | {c['verification_status']} |")
+                      f"{_fmt(c['finding_id'])} | {c['applied_status']} | {c['verification_status']} | "
+                      f"{retest_result} | {_fmt(c.get('retest_run_id'))} |")
     else:
         out.append("No controls recorded.")
-    out.append("\nApplied ≠ Effective: effectiveness is reported under Retests, from existing Retest evidence.\n")
+    out.append("\nApplied ≠ Effective: a Control's verification status records only whether a Retest was "
+               "run, never that it worked. The Retest Result column carries the originating Finding's "
+               "existing outcome; effectiveness is never inferred from the presence of a Retest.\n")
     out.append("### Retests\n")
     if r["retests"]:
         out.append("| Retest Run | Finding | Control | Result |")

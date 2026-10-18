@@ -60,6 +60,76 @@ class AssessmentReport:
 
 
 # --------------------------------------------------------------------------- #
+# Profile normalization (reporting layer only)
+# --------------------------------------------------------------------------- #
+# A loaded context Profile (Self/Target/Environment) carries large raw payloads
+# — model fingerprints, full recon output, nested dependency/trust dicts and
+# topology graphs — that do not belong in a report. These helpers reshape each
+# Profile into a concise, deterministic summary that keeps only fields that
+# actually exist in the Profile schema, always retaining its authoritative
+# identifier. They never mutate the underlying Profile and never copy its raw
+# nested structures. A Profile that could not be loaded normalizes to ``None``;
+# the Assessment's reference to it still surfaces in ``unavailable_references``.
+_RETEST_RESULTS = {"EFFECTIVE", "PARTIALLY_EFFECTIVE", "INEFFECTIVE"}
+
+
+def _normalize_profile(kind: str, profile: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Return a concise reporting view of one context Profile, or ``None``.
+
+    Normalization lives only in the reporting layer: the Profile domain models
+    are untouched. List fields are sorted only where ordering carries no domain
+    meaning (capabilities, technologies, dependency names, interfaces).
+    """
+    if not profile:
+        return None
+
+    if kind == "system":
+        caps = profile.get("capabilities")
+        summary: Dict[str, Any] = {
+            "kind": "system",
+            "id": profile.get("self_profile_id"),
+            "system_type": profile.get("system_type"),
+            "subtype": profile.get("subtype") or None,
+            "capabilities": sorted(k for k, v in caps.items() if v) if isinstance(caps, dict) else None,
+        }
+    elif kind == "target":
+        interfaces = profile.get("known_interfaces")
+        summary = {
+            "kind": "target",
+            "id": profile.get("target_profile_id"),
+            "name": profile.get("name") or None,
+            "target_type": profile.get("target_type"),
+            "objective": profile.get("objective") or None,
+            "security_objective": profile.get("security_objective") or None,
+            "interfaces": sorted(interfaces) if isinstance(interfaces, list) and interfaces else None,
+        }
+    elif kind == "environment":
+        deps = profile.get("ai_dependencies") or []
+        mcp = profile.get("mcp_servers") or []
+        techs = profile.get("technologies")
+        summary = {
+            "kind": "environment",
+            "id": profile.get("environment_profile_id"),
+            "reference": profile.get("target_reference") or None,
+            "technologies": sorted(techs) if isinstance(techs, list) and techs else None,
+            "ai_dependencies": sorted(d.get("name") for d in deps
+                                      if isinstance(d, dict) and d.get("name")) or None,
+            "mcp_servers": sorted(d.get("name") for d in mcp
+                                  if isinstance(d, dict) and d.get("name")) or None,
+        }
+    else:
+        summary = {"kind": kind, "id": profile.get("id") or profile.get(f"{kind}_profile_id")}
+
+    # Drop empty fields for conciseness, but always keep the identity (kind, id).
+    return {k: v for k, v in summary.items() if v is not None or k in ("kind", "id")}
+
+
+def _normalize_profiles(profiles: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize the ``{system, target, environment}`` profile map for reporting."""
+    return {kind: _normalize_profile(kind, profile) for kind, profile in profiles.items()}
+
+
+# --------------------------------------------------------------------------- #
 # Builder
 # --------------------------------------------------------------------------- #
 def build_assessment_report(assessment_id: str, base_dir: str = "artifacts") -> AssessmentReport:
@@ -185,15 +255,33 @@ def build_assessment_report(assessment_id: str, base_dir: str = "artifacts") -> 
     } for f in summary["finding_records"]]
 
     # ---- Controls (Applied != Effective; effectiveness lives in Retests) --- #
-    control_entries: List[Dict[str, Any]] = [{
-        "control_ref": c.get("control"),
-        "implementation": c.get("implementation"),
-        "finding_id": c.get("finding_id"),
-        "experiment_id": c.get("experiment_id"),
-        "applied_status": "APPLIED",
-        "verification_status": "NOT_VERIFIED" if c.get("awaiting_retest") else "VERIFIED_BY_RETEST",
-        "retest_run_id": c.get("retest_run_id"),
-    } for c in summary["control_records"]]
+    # A Control that was retested is RETESTED — not "verified" and never
+    # "effective" by the mere existence of a Retest. The authoritative outcome
+    # is the originating Finding's current retest_status, looked up (not
+    # recomputed) and surfaced as ``retest_result``:
+    #   * no Retest            -> verification NOT_VERIFIED, retest_result None
+    #   * Retest, usable result-> verification RETESTED, retest_result that result
+    #   * Retest, no usable one-> verification RETESTED, retest_result "UNKNOWN"
+    retest_status_by_finding = {f["finding_id"]: f.get("retest_status") for f in finding_entries}
+    control_entries: List[Dict[str, Any]] = []
+    for c in summary["control_records"]:
+        if c.get("awaiting_retest"):
+            verification_status = "NOT_VERIFIED"
+            retest_result = None
+        else:
+            verification_status = "RETESTED"
+            status = retest_status_by_finding.get(c.get("finding_id"))
+            retest_result = status if status in _RETEST_RESULTS else "UNKNOWN"
+        control_entries.append({
+            "control_ref": c.get("control"),
+            "implementation": c.get("implementation"),
+            "finding_id": c.get("finding_id"),
+            "experiment_id": c.get("experiment_id"),
+            "applied_status": "APPLIED",
+            "verification_status": verification_status,
+            "retest_result": retest_result,
+            "retest_run_id": c.get("retest_run_id"),
+        })
 
     # ---- Retests: existing per-Finding retest_status, never recomputed ----- #
     retest_entries: List[Dict[str, Any]] = sorted((
@@ -308,7 +396,7 @@ def build_assessment_report(assessment_id: str, base_dir: str = "artifacts") -> 
             "updated_at": assessment.updated_at,
         },
         scope=assessment.scope or {},
-        profiles=summary["profiles"],
+        profiles=_normalize_profiles(summary["profiles"]),
         analysis_context=context_entries,
         threat_models=threat_model_entries,
         plans=plan_entries,
