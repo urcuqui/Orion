@@ -157,9 +157,20 @@ PASS/FAIL/ERROR execution result:
 
 | Status | Meaning |
 | --- | --- |
-| `ACTIVE` | executable — manual execution is allowed |
-| `DISABLED` | retained, but execution is blocked until reactivated |
-| `ARCHIVED` | retained for reference only; execution is permanently blocked |
+| `ACTIVE` | operational — manual execution is allowed |
+| `DISABLED` | temporarily inactive. May be reactivated (`ACTIVE`) or archived |
+| `ARCHIVED` | **terminal.** Retained for historical/reference purposes. Cannot execute and cannot return to `ACTIVE` or `DISABLED` |
+
+`DISABLED` ≠ `ARCHIVED`: `DISABLED` is a reversible pause; `ARCHIVED` is a
+one-way retirement. This distinction is enforced by `set_status(...)`, not
+just documented:
+
+```
+ACTIVE   -> ACTIVE | DISABLED | ARCHIVED      allowed
+DISABLED -> DISABLED | ACTIVE | ARCHIVED      allowed
+ARCHIVED -> ARCHIVED                          allowed (no-op)
+ARCHIVED -> ACTIVE | DISABLED                 rejected (RegressionStatusError)
+```
 
 Only `ACTIVE` regressions can execute. The backend enforces this
 unconditionally — `run_regression(...)` fails closed (raises before the attack
@@ -167,6 +178,13 @@ runner is invoked, producing no new Run or Evidence) for `DISABLED` /
 `ARCHIVED` regressions, whether the request comes from the UI, the
 `POST /api/regressions/<id>/run` endpoint, or the CLI. The UI only hides the
 `[ RUN REGRESSION ]` button as a courtesy; it is never the enforcement point.
+The same is true of status changes: `POST /api/regressions/<id>/status`
+rejects an attempt to reactivate an `ARCHIVED` regression with `409`, never a
+silent transition or a `500`.
+
+A rejected status transition never changes the regression's stored status, and
+never touches the Finding, Control, Assessment or Experiment it was created
+from — regression lifecycle is independent of security conclusions.
 
 ## Manual execution
 

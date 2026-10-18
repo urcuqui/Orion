@@ -354,3 +354,82 @@ def test_regression_execution_does_not_mutate_finding(tmp_path):
     SR.run_regression(reg.regression_id, str(tmp_path))
     after = F.load_finding(fid, str(tmp_path)).to_dict()
     assert before == after
+
+
+# ------------------------- §54 ARCHIVED is terminal -------------------------- #
+def test_active_to_disabled_allowed(tmp_path):
+    reg = SR.create_from_finding(_mitigated(tmp_path), str(tmp_path))
+    assert reg.status == SR.ACTIVE
+    assert SR.set_status(reg.regression_id, SR.DISABLED, str(tmp_path)).status == SR.DISABLED
+
+
+def test_disabled_to_active_allowed(tmp_path):
+    reg = SR.create_from_finding(_mitigated(tmp_path), str(tmp_path))
+    SR.set_status(reg.regression_id, SR.DISABLED, str(tmp_path))
+    assert SR.set_status(reg.regression_id, SR.ACTIVE, str(tmp_path)).status == SR.ACTIVE
+
+
+def test_active_to_archived_allowed(tmp_path):
+    reg = SR.create_from_finding(_mitigated(tmp_path), str(tmp_path))
+    assert SR.set_status(reg.regression_id, SR.ARCHIVED, str(tmp_path)).status == SR.ARCHIVED
+
+
+def test_disabled_to_archived_allowed(tmp_path):
+    reg = SR.create_from_finding(_mitigated(tmp_path), str(tmp_path))
+    SR.set_status(reg.regression_id, SR.DISABLED, str(tmp_path))
+    assert SR.set_status(reg.regression_id, SR.ARCHIVED, str(tmp_path)).status == SR.ARCHIVED
+
+
+def test_archived_to_active_rejected(tmp_path):
+    reg = SR.create_from_finding(_mitigated(tmp_path), str(tmp_path))
+    SR.set_status(reg.regression_id, SR.ARCHIVED, str(tmp_path))
+    with pytest.raises(SR.RegressionStatusError):
+        SR.set_status(reg.regression_id, SR.ACTIVE, str(tmp_path))
+    # Rejected transition must not change the stored status.
+    assert SR.get(reg.regression_id, str(tmp_path)).status == SR.ARCHIVED
+
+
+def test_archived_to_disabled_rejected(tmp_path):
+    reg = SR.create_from_finding(_mitigated(tmp_path), str(tmp_path))
+    SR.set_status(reg.regression_id, SR.ARCHIVED, str(tmp_path))
+    with pytest.raises(SR.RegressionStatusError):
+        SR.set_status(reg.regression_id, SR.DISABLED, str(tmp_path))
+    assert SR.get(reg.regression_id, str(tmp_path)).status == SR.ARCHIVED
+
+
+def test_archived_to_archived_is_a_noop_allowed(tmp_path):
+    reg = SR.create_from_finding(_mitigated(tmp_path), str(tmp_path))
+    SR.set_status(reg.regression_id, SR.ARCHIVED, str(tmp_path))
+    assert SR.set_status(reg.regression_id, SR.ARCHIVED, str(tmp_path)).status == SR.ARCHIVED
+
+
+def test_archived_cannot_execute_and_never_calls_attack_runner(tmp_path, monkeypatch):
+    reg = SR.create_from_finding(_mitigated(tmp_path), str(tmp_path))
+    SR.set_status(reg.regression_id, SR.ARCHIVED, str(tmp_path))
+
+    calls = []
+    monkeypatch.setattr(SR.service, "_execute", lambda *a, **k: calls.append(1), raising=True)
+
+    with pytest.raises(SR.RegressionStatusError):
+        SR.run_regression(reg.regression_id, str(tmp_path))
+    assert calls == []
+    assert SR.get(reg.regression_id, str(tmp_path)).last_run_id is None
+    assert SR.RegressionRepository(str(tmp_path)).load_result(reg.regression_id) is None
+
+
+def test_archived_reactivation_does_not_mutate_finding_or_other_fields(tmp_path):
+    fid = _mitigated(tmp_path)
+    reg = SR.create_from_finding(fid, str(tmp_path))
+    SR.set_status(reg.regression_id, SR.ARCHIVED, str(tmp_path))
+    archived = SR.get(reg.regression_id, str(tmp_path))
+    finding_before = F.load_finding(fid, str(tmp_path)).to_dict()
+
+    with pytest.raises(SR.RegressionStatusError):
+        SR.set_status(reg.regression_id, SR.ACTIVE, str(tmp_path))
+
+    finding_after = F.load_finding(fid, str(tmp_path)).to_dict()
+    assert finding_before == finding_after                 # Finding untouched
+    rejected_attempt = SR.get(reg.regression_id, str(tmp_path))
+    assert rejected_attempt.status == SR.ARCHIVED
+    assert rejected_attempt.success_signature == archived.success_signature
+    assert rejected_attempt.expected_security_state == archived.expected_security_state

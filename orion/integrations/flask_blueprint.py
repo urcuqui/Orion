@@ -746,10 +746,14 @@ def api_regression_run(regression_id):
 
 @api_bp.post("/regressions/<regression_id>/status")
 def api_regression_status(regression_id):
+    """Change a regression's lifecycle status. ARCHIVED is terminal: trying to
+    reactivate one is a normal lifecycle conflict, never a server error."""
     from orion import security_regressions as SR
     payload = request.get_json(silent=True) or {}
     try:
         reg = SR.set_status(regression_id, (payload.get("status") or "").upper(), ARTIFACT_DIR)
+    except SR.RegressionStatusError as exc:
+        return jsonify({"error": str(exc)}), 409
     except SR.RegressionError as exc:
         return jsonify({"error": str(exc)}), 400
     if reg is None:

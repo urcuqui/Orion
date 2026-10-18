@@ -85,6 +85,22 @@ def test_api_unknown_regression_is_still_404(api):
     assert r.status_code == 404
 
 
+def test_api_rejects_reactivating_archived_regression_with_409(api):
+    client, artifacts = api
+    reg_id = _mitigated_regression(artifacts)
+
+    assert SR.set_status(reg_id, SR.ARCHIVED, artifacts).status == SR.ARCHIVED
+
+    r = client.post(f"/api/regressions/{reg_id}/status", json={"status": "ACTIVE"})
+    assert r.status_code == 409
+    body = r.get_json()
+    assert "ARCHIVED" in body["error"] and reg_id in body["error"]
+
+    # The rejected transition changed nothing.
+    still_archived = SR.get(reg_id, artifacts)
+    assert still_archived.status == SR.ARCHIVED
+
+
 # --------------------------------- CLI --------------------------------------- #
 def test_cli_runs_active_regression(tmp_path, capsys):
     reg_id = _mitigated_regression(tmp_path)

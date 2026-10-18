@@ -10,7 +10,8 @@ from orion.catalog import attacks as CAT
 from orion.evidence import EvidenceStore
 from orion.findings import EFFECTIVE, classify_control, load_finding
 from orion.security_regressions.model import (
-    ACTIVE, SecurityRegression, RegressionResult, evaluate_expected_vs_observed, ERROR)
+    ACTIVE, ARCHIVED, STATUSES, SecurityRegression, RegressionResult,
+    evaluate_expected_vs_observed, ERROR)
 from orion.security_regressions.repository import RegressionRepository
 from orion.security_regressions.signature import build_success_signature
 
@@ -205,13 +206,23 @@ def list_regressions(base_dir: str = "artifacts"):
 
 
 def set_status(regression_id: str, status: str, base_dir: str = "artifacts") -> Optional[SecurityRegression]:
+    """Transition a regression's lifecycle status.
+
+    ARCHIVED is terminal: once a regression is ARCHIVED it is retained for
+    reference only and can never move back to ACTIVE or DISABLED (idempotent
+    ARCHIVED -> ARCHIVED is fine). ACTIVE and DISABLED otherwise transition
+    freely between each other and into ARCHIVED.
+    """
     repo = RegressionRepository(base_dir)
     reg = repo.get(regression_id)
     if reg is None:
         return None
-    from orion.security_regressions.model import STATUSES, _now
     if status not in STATUSES:
         raise RegressionError(f"invalid status {status!r}")
+    if reg.status == ARCHIVED and status != ARCHIVED:
+        raise RegressionStatusError(
+            f"Regression {reg.regression_id} is ARCHIVED and cannot be reactivated.")
+    from orion.security_regressions.model import _now
     reg.status, reg.updated_at = status, _now()
     repo.save(reg)
     return reg
