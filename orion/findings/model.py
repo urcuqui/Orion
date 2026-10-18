@@ -140,34 +140,60 @@ def evaluate_corroboration(finding: Finding, evidence_records: List[Any],
     attack_ids = {(r.parameters or {}).get("attack_id") or r.attack_technique for r in successful}
     targets = {(r.target or {}).get("model_name") for r in successful}
     same_condition = len(attack_ids) <= 1 and len(targets) <= 1
-    criteria_reproduced = sorted({c["criterion"]
-                                  for r in successful
-                                  for c in ((r.parameters or {}).get("success_evaluation", {}) or {}).get("criteria", [])
-                                  if c.get("result")})
 
-    independent_ok = (independent_run_count >= policy.minimum_trials) if policy.require_independent_runs else True
-    eligible = (trial_count >= policy.minimum_trials
-                and success_rate >= policy.minimum_success_rate
-                and independent_ok and same_condition and successful_trials > 0)
+    # --- Per-criterion reproduction (never a union across different runs). ---
+    # A criterion is REPRODUCED only when it independently held in enough runs at
+    # the required rate — not because it appeared in one of several runs.
+    universe = []
+    has_any_criteria = False
+    reproduced_per_run = []
+    for r in recs:
+        crits = ((r.parameters or {}).get("success_evaluation", {}) or {}).get("criteria", []) or []
+        if crits:
+            has_any_criteria = True
+        reproduced_per_run.append({c["criterion"] for c in crits if c.get("result")})
+        for c in crits:
+            if c["criterion"] not in universe:
+                universe.append(c["criterion"])
 
-    if eligible:
-        reason = (f"Confirmed: {successful_trials}/{trial_count} independent runs reproduced the "
-                  f"criteria (success rate {success_rate}).")
-    elif trial_count < policy.minimum_trials:
-        reason = f"Additional independent runs required ({trial_count}/{policy.minimum_trials})."
-    elif success_rate < policy.minimum_success_rate:
-        reason = f"Success rate {success_rate} below threshold {policy.minimum_success_rate}."
+    per_criterion: Dict[str, Any] = {}
+    for crit in universe:
+        successes = sum(1 for s in reproduced_per_run if crit in s)
+        rate = round(successes / trial_count, 4) if trial_count else 0.0
+        reproduced = (trial_count >= policy.minimum_trials
+                      and rate >= policy.minimum_success_rate and same_condition)
+        per_criterion[crit] = {
+            "independent_runs": trial_count, "successes": successes, "success_rate": rate,
+            "required_runs": policy.minimum_trials,
+            "required_success_rate": policy.minimum_success_rate,
+            "reproduced": bool(reproduced),
+        }
+
+    criteria_reproduced = sorted(c for c, s in per_criterion.items() if s["reproduced"])
+    legacy = not has_any_criteria
+    eligible = bool(criteria_reproduced) and same_condition
+
+    if legacy:
+        reason = "Per-criterion reproduction unavailable (legacy evidence): UNKNOWN / LEGACY."
+    elif eligible:
+        reason = (f"Confirmed: criteria {', '.join(criteria_reproduced)} reproduced across "
+                  f"{trial_count} independent runs (≥{policy.minimum_trials} at ≥{policy.minimum_success_rate}).")
     elif not same_condition:
         reason = "Runs do not share the same attack/target condition."
+    elif trial_count < policy.minimum_trials:
+        reason = f"Additional independent runs required ({trial_count}/{policy.minimum_trials})."
     else:
-        reason = "Not enough independent runs."
+        reason = (f"No security criterion met the reproduction policy "
+                  f"(≥{policy.minimum_trials} independent runs at ≥{policy.minimum_success_rate}).")
 
     return {
         "trial_count": trial_count,
         "successful_trials": successful_trials,
         "success_rate": success_rate,
         "independent_run_count": independent_run_count,
+        "per_criterion": per_criterion,
         "criteria_reproduced": criteria_reproduced,
+        "legacy": legacy,
         "minimum_trials": policy.minimum_trials,
         "minimum_success_rate": policy.minimum_success_rate,
         "confirmation_eligible": bool(eligible),

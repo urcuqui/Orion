@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% from "components/status.html" import status_badge %}
+{% set section = 'regressions' %}
+{% block title %}Security Regressions — ORION{% endblock %}
+
+{% block content %}
+<div class="section-head">
+  <h1>Security Regressions</h1>
+  <p class="sub">A Security Regression re-validates a <em>previously verified</em> security property:
+    <strong>does the protected behavior still hold?</strong> — not merely “did the attack succeed?”.
+    Execution is always manual.</p>
+</div>
+
+{% if not regressions %}
+  <div class="panel"><div class="state">No security regressions yet. Create one from a Finding whose
+    control was verified by an <strong>EFFECTIVE</strong> retest.</div></div>
+{% else %}
+<div class="panel">
+  <div class="table-scroll"><table class="orion">
+    <caption>Manually re-validatable security properties</caption>
+    <thead><tr>{% for h in ['Regression','Target','Source Finding','Security Condition','Status','Last Result',''] %}<th scope="col">{{ h }}</th>{% endfor %}</tr></thead>
+    <tbody>
+      {% for r in regressions %}
+      <tr>
+        <td><a class="mono" href="{{ url_for('regression_detail_page', regression_id=r.regression_id) }}">{{ r.regression_id }}</a>
+          <div class="sub">{{ r.name }}</div></td>
+        <td class="mono">{{ r.target or 'UNKNOWN' }}</td>
+        <td class="mono">{% if r.source_finding_id %}<a href="{{ url_for('finding_detail_page', finding_id=r.source_finding_id) }}">{{ r.source_finding_id }}</a>{% else %}—{% endif %}</td>
+        <td class="sub">{{ r.success_signature.get('criterion', '—') }}</td>
+        <td>{{ status_badge(r.status) }}</td>
+        <td>{% if r.last_result %}{{ status_badge(r.last_result) }}{% else %}<span class="sub">not run</span>{% endif %}</td>
+        <td><a class="btn btn-ghost" href="{{ url_for('regression_detail_page', regression_id=r.regression_id) }}">[ open ]</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table></div>
+</div>
+{% endif %}
+{% endblock %}

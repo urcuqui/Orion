@@ -164,9 +164,37 @@ def finding_detail_page(finding_id):
     from orion.findings import load_finding
     f = load_finding(finding_id, 'artifacts')
     from orion.workspace_view import finding_workspace
+    # Security Regression eligibility + any regression already created from this finding.
+    regression = regression_eligible = regression_reason = None
+    try:
+        from orion import security_regressions as SR
+        regression_eligible, regression_reason = SR.can_create_regression(f) if f else (False, "Unknown finding.")
+        regression = next((r.to_dict() for r in SR.list_regressions('artifacts')
+                           if r.source_finding_id == finding_id), None)
+    except Exception:
+        pass
     return render_template('finding-detail.html',
                            finding=f.to_dict() if f else None, finding_id=finding_id,
-                           workspace=finding_workspace(f))
+                           workspace=finding_workspace(f),
+                           regression=regression, regression_eligible=regression_eligible,
+                           regression_reason=regression_reason)
+
+
+@app.route('/regressions')
+def regressions_page():
+    from orion import security_regressions as SR
+    regressions = [r.to_dict() for r in SR.list_regressions('artifacts')]
+    return render_template('regressions.html', regressions=regressions)
+
+
+@app.route('/regressions/<regression_id>')
+def regression_detail_page(regression_id):
+    from orion import security_regressions as SR
+    reg = SR.get(regression_id, 'artifacts')
+    latest = SR.RegressionRepository('artifacts').load_result(regression_id) if reg else None
+    return render_template('regression-detail.html',
+                           regression=reg.to_dict() if reg else None,
+                           regression_id=regression_id, latest=latest)
 
 @app.route('/red-team')
 def red_team_page():

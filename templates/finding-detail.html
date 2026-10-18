@@ -87,6 +87,27 @@
     {% else %}<p class="sub">? Linked experiment state unavailable. Review experiments to locate the originating execution.</p><a class="btn btn-ghost" href="/experiment">Review experiments</a>{% endif %}
     <a class="btn btn-tertiary" href="#finding-evidence">View evidence</a>
   </section>
+
+  {# ---- Security Regression (manual re-validation of the verified mitigation) ---- #}
+  <div class="panel">
+    <div class="panel-title">Security Regression</div>
+    {% if regression %}
+      <p class="sub">Mitigation {{ status_badge('VERIFIED') }} — this finding has a security regression:</p>
+      <pre class="term-pre">Regression ... {{ regression.regression_id }}
+Status ....... {{ regression.status }}{% if regression.last_result %}
+Last result .. {{ regression.last_result }}{% endif %}</pre>
+      <a class="btn btn-blue" href="{{ url_for('regression_detail_page', regression_id=regression.regression_id) }}">[ OPEN REGRESSION ]</a>
+    {% elif regression_eligible %}
+      <p class="sub">Mitigation {{ status_badge('VERIFIED') }} by an effective retest. Turn it into a manually
+        re-validatable security property.</p>
+      <div class="btn-row"><button class="btn btn-red" id="create-regression" data-finding="{{ finding.id }}">[ CREATE REGRESSION ]</button></div>
+      <div id="create-regression-out" class="sub" style="margin-top:0.4rem;"></div>
+    {% else %}
+      <p class="sub">A security regression can be created once the control has been verified by an
+        <strong>EFFECTIVE</strong> retest.{% if regression_reason %} ({{ regression_reason }}){% endif %}</p>
+    {% endif %}
+  </div>
+
   <div class="panel">
     <div class="panel-title">Provenance</div>
     <p class="sub">Why Orion ran this, what justified it, and whether the retest improved security.</p>
@@ -118,4 +139,21 @@ Observed boundary crossing:
     <a class="btn" href="{{ url_for('findings_page') }}">▸ All findings</a>
   </div>
 {% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  const btn = document.getElementById("create-regression");
+  if (!btn) return;
+  const out = document.getElementById("create-regression-out");
+  btn.addEventListener("click", async () => {
+    Orion.setState(out, "running", "creating security regression…");
+    try {
+      const reg = await Orion.postJSON("/api/regressions", { finding_id: btn.dataset.finding });
+      window.location.href = "/regressions/" + encodeURIComponent(reg.regression_id);
+    } catch (e) { Orion.setState(out, "error", "[x] " + e.message); }
+  });
+})();
+</script>
 {% endblock %}

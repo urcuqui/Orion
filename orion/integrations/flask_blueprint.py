@@ -695,6 +695,72 @@ def api_finding_detail(finding_id):
     return jsonify(f.to_dict())
 
 
+@api_bp.get("/regressions")
+def api_regressions_list():
+    from orion import security_regressions as SR
+    return jsonify({"regressions": [r.to_dict() for r in SR.list_regressions(ARTIFACT_DIR)]})
+
+
+@api_bp.get("/regressions/<regression_id>")
+def api_regression_get(regression_id):
+    from orion import security_regressions as SR
+    reg = SR.get(regression_id, ARTIFACT_DIR)
+    if reg is None:
+        return jsonify({"error": "unknown regression"}), 404
+    out = reg.to_dict()
+    out["latest_result"] = SR.RegressionRepository(ARTIFACT_DIR).load_result(regression_id)
+    return jsonify(out)
+
+
+@api_bp.post("/regressions")
+def api_regression_create():
+    """Create a Security Regression from an effectively-mitigated Finding."""
+    from orion import security_regressions as SR
+    payload = request.get_json(silent=True) or {}
+    finding_id = (payload.get("finding_id") or "").strip()
+    if not finding_id:
+        return jsonify({"error": "finding_id is required"}), 400
+    try:
+        reg = SR.create_from_finding(finding_id, ARTIFACT_DIR, name=payload.get("name"))
+    except SR.PreconditionError as exc:
+        return jsonify({"error": str(exc), "status": "NOT_ELIGIBLE"}), 409
+    except SR.RegressionError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(reg.to_dict())
+
+
+@api_bp.post("/regressions/<regression_id>/run")
+def api_regression_run(regression_id):
+    """Manually execute a regression (operator-initiated only). Only ACTIVE
+    regressions may run; DISABLED/ARCHIVED are a normal lifecycle rejection,
+    never a server error."""
+    from orion import security_regressions as SR
+    try:
+        result = SR.run_regression(regression_id, ARTIFACT_DIR)
+    except SR.RegressionStatusError as exc:
+        return jsonify({"error": str(exc)}), 409
+    except SR.RegressionError as exc:
+        return jsonify({"error": str(exc)}), 404
+    return jsonify(result.to_dict())
+
+
+@api_bp.post("/regressions/<regression_id>/status")
+def api_regression_status(regression_id):
+    """Change a regression's lifecycle status. ARCHIVED is terminal: trying to
+    reactivate one is a normal lifecycle conflict, never a server error."""
+    from orion import security_regressions as SR
+    payload = request.get_json(silent=True) or {}
+    try:
+        reg = SR.set_status(regression_id, (payload.get("status") or "").upper(), ARTIFACT_DIR)
+    except SR.RegressionStatusError as exc:
+        return jsonify({"error": str(exc)}), 409
+    except SR.RegressionError as exc:
+        return jsonify({"error": str(exc)}), 400
+    if reg is None:
+        return jsonify({"error": "unknown regression"}), 404
+    return jsonify(reg.to_dict())
+
+
 @api_bp.get("/plans/<plan_id>/handoff")
 def api_plan_handoff(plan_id):
     from orion import plans as PL

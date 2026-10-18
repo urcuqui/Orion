@@ -319,6 +319,12 @@ pre { overflow-x: auto; }
 .badge-eligible, .badge-approved, .badge-complete, .badge-completed, .badge-mitigated, .badge-effective, .badge-attack_blocked { color: var(--status-success); }
 .badge-neutral, .badge-no_attack, .badge-queued, .badge-ready, .badge-pending, .badge-blocked, .badge-not_applicable { color: var(--status-neutral); }
 .badge-unknown, .badge-not_retested { color: var(--status-unknown); border-style: dashed; }
+/* Security regression status + result badges. */
+.badge-pass, .badge-active { color: var(--status-success); }
+.badge-fail { color: var(--status-high); }
+.badge-error, .badge-archived { color: var(--status-unknown); }
+.badge-disabled { color: var(--status-neutral); }
+.row-mismatch td { color: var(--status-high); }
 .table-scroll { overflow-x: auto; max-width: 100%; }
 table.orion th { background: var(--panel-alt); color: var(--text-secondary); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; position: sticky; top: 0; z-index: 1; }
 table.orion caption { text-align: left; color: var(--text-secondary); padding-bottom: 10px; }

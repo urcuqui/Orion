@@ -90,6 +90,46 @@ def _cmd_validate(args: argparse.Namespace) -> int:
     return 1
 
 
+def _cmd_regression_list(args: argparse.Namespace) -> int:
+    from orion import security_regressions as SR
+    regs = SR.list_regressions(args.artifacts)
+    if not regs:
+        print("No security regressions.")
+        return 0
+    print("Security regressions:")
+    for r in regs:
+        print(f"  - {r.regression_id}: {r.name} [{r.status}] last={r.last_result or '-'}")
+    return 0
+
+
+def _cmd_regression_create(args: argparse.Namespace) -> int:
+    from orion import security_regressions as SR
+    try:
+        reg = SR.create_from_finding(args.finding_id, args.artifacts)
+    except SR.RegressionError as exc:
+        print(f"Cannot create regression: {exc}")
+        return 1
+    print(f"Created {reg.regression_id} from {args.finding_id}")
+    return 0
+
+
+def _cmd_regression_run(args: argparse.Namespace) -> int:
+    """Manually execute a security regression (operator-initiated only)."""
+    from orion import security_regressions as SR
+    try:
+        res = SR.run_regression(args.regression_id, args.artifacts)
+    except SR.RegressionError as exc:
+        print(f"Error: {exc}")
+        return 1
+    print(f"[{res.result}] {args.regression_id}  run_id={res.run_id}")
+    for k, want in (res.expected or {}).items():
+        got = (res.observed or {}).get(k)
+        flag = "" if k not in (res.mismatches or []) and got is not None else "   <-- mismatch"
+        print(f"  {k}: expected={want} observed={got}{flag}")
+    print(res.note)
+    return 0 if res.result == "PASS" else 1
+
+
 def _print_metrics(metrics: dict) -> None:
     for name in ("clean_accuracy", "robust_accuracy", "attack_success_rate",
                  "perturbation_linf", "confidence_shift"):
@@ -130,6 +170,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_validate = sub.add_parser("validate", help="validate a scenario file")
     p_validate.add_argument("scenario")
     p_validate.set_defaults(func=_cmd_validate)
+
+    p_reg = sub.add_parser("regression", help="security regressions (manual re-validation)")
+    reg_sub = p_reg.add_subparsers(dest="reg_command", required=True)
+    r_list = reg_sub.add_parser("list", help="list security regressions")
+    r_list.set_defaults(func=_cmd_regression_list)
+    r_create = reg_sub.add_parser("create", help="create from an effectively-mitigated finding")
+    r_create.add_argument("finding_id")
+    r_create.set_defaults(func=_cmd_regression_create)
+    r_run = reg_sub.add_parser("run", help="manually run a security regression")
+    r_run.add_argument("regression_id")
+    r_run.set_defaults(func=_cmd_regression_run)
 
     return parser
 

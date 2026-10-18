@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% from "components/status.html" import status_badge %}
+{% set section = 'regressions' %}
+{% block title %}{{ regression_id }} — Security Regression — ORION{% endblock %}
+
+{% block content %}
+{% if not regression %}
+  <div class="section-head"><h1>{{ regression_id }}</h1></div>
+  <div class="state error">Security regression not found.</div>
+  <div class="btn-row" style="margin-top:1rem;"><a class="btn" href="{{ url_for('regressions_page') }}">▸ All regressions</a></div>
+{% else %}
+  <div class="section-head">
+    <h1><span class="mono">{{ regression.regression_id }}</span> {{ status_badge(regression.status) }}</h1>
+    <p class="sub">{{ regression.name }}</p>
+  </div>
+
+  {# ---- Source (why this regression exists) ---- #}
+  <div class="panel">
+    <div class="panel-title">Source</div>
+    <pre class="term-pre">Target ............ {{ regression.target }}
+Attack ............ {{ regression.attack_id }}  ({{ regression.family|replace('_',' ') }})
+Source finding .... {{ regression.source_finding_id or '—' }}
+Control ........... {{ regression.source_control_ref or '—' }}{% if regression.control_implementation %}  ({{ regression.control_implementation }}){% endif %}
+Verified by retest  {{ regression.source_retest_run_id or '—' }}</pre>
+    {% if regression.description %}<p class="sub">{{ regression.description }}</p>{% endif %}
+  </div>
+
+  {# ---- Expected protected security state ---- #}
+  <div class="panel">
+    <div class="panel-title">EXPECTED PROTECTED BEHAVIOR — Expected Security State</div>
+    <p class="sub">The security boundary that must still hold, demonstrated by the effective retest. Model/agent
+      influence is allowed to vary; the control is what must remain effective.</p>
+    <pre class="term-pre">{% for k, v in regression.expected_security_state.items() %}{{ '%-22s'|format(k) }} {{ v }}
+{% endfor %}</pre>
+  </div>
+
+  {# ---- Manual execution ---- #}
+  <div class="panel">
+    <div class="panel-title">Manual execution</div>
+    {% if regression.status == 'ACTIVE' %}
+    <p class="sub">Operator-initiated only. Each run creates normal auditable evidence.</p>
+    <div class="btn-row">
+      <button class="btn btn-red" id="run-reg" data-id="{{ regression.regression_id }}">[ RUN REGRESSION ]</button>
+    </div>
+    {% elif regression.status == 'DISABLED' %}
+    <div class="state">REGRESSION DISABLED<br>Manual execution is unavailable until this regression is reactivated.</div>
+    {% elif regression.status == 'ARCHIVED' %}
+    <div class="state">REGRESSION ARCHIVED<br>Archived regressions are retained for reference and cannot be executed.</div>
+    {% endif %}
+    <div id="reg-result" style="margin-top:0.8rem;"></div>
+  </div>
+
+  {# ---- Success signature ---- #}
+  <div class="panel">
+    <div class="panel-title">ORIGINAL SECURITY FAILURE — Success Signature</div>
+    <p class="sub">The identity of the original security failure, derived from the original attack evidence. This
+      does not change when a retest succeeds.</p>
+    <pre class="term-pre">{% for k, v in regression.success_signature.items() %}{{ '%-18s'|format(k) }} {{ v }}
+{% endfor %}</pre>
+  </div>
+
+  {# ---- Provenance ---- #}
+  <div class="panel">
+    <div class="panel-title">Provenance</div>
+    <div class="prov-chain">
+      {% set nodes = [
+        ('Assessment', regression.assessment_id, ('/assessments/' ~ regression.assessment_id) if regression.assessment_id else None),
+        ('Finding', regression.source_finding_id, ('/findings/' ~ regression.source_finding_id) if regression.source_finding_id else None),
+        ('Experiment', regression.source_experiment_id, ('/experiment/' ~ regression.source_experiment_id) if regression.source_experiment_id else None),
+        ('Attack Run', regression.source_attack_run_id, ('/runs/' ~ regression.source_attack_run_id) if regression.source_attack_run_id else None),
+        ('Control', regression.source_control_ref, None),
+        ('Retest', regression.source_retest_run_id, ('/runs/' ~ regression.source_retest_run_id) if regression.source_retest_run_id else None),
+        ('Regression', regression.regression_id, None),
+        ('Latest Run', regression.last_run_id, ('/runs/' ~ regression.last_run_id) if regression.last_run_id else None),
+      ] %}
+      {% for label, value, link in nodes %}
+        <div class="prov-node {{ 'on' if value else 'off' }}">
+          <div class="prov-label">{{ label }}</div>
+          {% if value and link %}<a class="prov-val" href="{{ link }}">{{ value }}</a>
+          {% elif value %}<span class="prov-val">{{ value }}</span>
+          {% else %}<span class="prov-val none">—</span>{% endif %}
+        </div>
+        {% if not loop.last %}<div class="prov-arrow">↓</div>{% endif %}
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="btn-row" style="margin-top:1rem;"><a class="btn" href="{{ url_for('regressions_page') }}">▸ All regressions</a></div>
+
+  <script id="latest-result" type="application/json">{{ latest|tojson if latest else 'null' }}</script>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  const expected = {{ (regression.expected_security_state if regression else {})|tojson }};
+  const host = document.getElementById("reg-result");
+  function fmt(v) { return v === null || v === undefined ? "—" : String(v); }
+  function render(res) {
+    if (!res) { host.innerHTML = '<div class="sub">Not run yet.</div>'; return; }
+    const badge = res.result === "PASS" ? '<span class="badge badge-pass">✓ PASS</span>'
+      : res.result === "FAIL" ? '<span class="badge badge-fail">× FAIL</span>'
+      : '<span class="badge badge-error">? ERROR</span>';
+    const mism = new Set(res.mismatches || []);
+    const rows = Object.keys(expected).map(k => {
+      const obs = (res.observed || {})[k];
+      const bad = mism.has(k) || obs === undefined || obs === null;
+      return `<tr class="${bad ? 'row-mismatch' : ''}"><td>${k}</td><td>${fmt(expected[k])}</td><td>${fmt(obs)}</td></tr>`;
+    }).join("");
+    host.innerHTML = `<div class="term-title">REGRESSION RESULT ${badge}</div>
+      <p class="sub">${Orion.esc(res.note || "")}</p>
+      <table class="orion compare"><thead><tr><th>Security condition</th><th>Expected</th><th>Observed</th></tr></thead>
+      <tbody>${rows}</tbody></table>
+      ${res.run_id ? `<div class="btn-row" style="margin-top:0.4rem;"><a class="btn btn-ghost" href="/runs/${encodeURIComponent(res.run_id)}">[ VIEW EVIDENCE ]</a></div>` : ""}`;
+  }
+  try { render(JSON.parse(document.getElementById("latest-result").textContent)); } catch (e) { render(null); }
+  const btn = document.getElementById("run-reg");
+  if (btn) btn.addEventListener("click", async () => {
+    Orion.setState(host, "running", "running regression (manual execution)…");
+    try { render(await Orion.postJSON("/api/regressions/" + encodeURIComponent(btn.dataset.id) + "/run", {})); }
+    catch (e) { Orion.setState(host, "error", "[x] " + e.message); }
+  });
+})();
+</script>
+{% endblock %}

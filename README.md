@@ -417,6 +417,32 @@ classification is deterministic (from evidence + criteria), not LLM-generated.
 Findings live under their own **Findings** view with full provenance; the Evidence
 screen is not overloaded with this responsibility.
 
+Confirmation is **per-criterion**: a Finding becomes `CONFIRMED` only when a
+specific security criterion was *independently reproduced* across the required
+runs — never because different criteria happened in different runs. Legacy
+Findings without per-criterion evidence load fine and read as `UNKNOWN / LEGACY`.
+
+## Security Regressions
+
+A verified mitigation can become a **Security Regression Test** — a deterministic,
+evidence-backed security property an operator can manually re-validate later:
+
+```
+Finding → Control → Retest → Verified Mitigation → Manual Security Regression
+```
+
+A Security Regression asks *"does the previously validated security behavior still
+hold?"*, not *"did the attack succeed?"*. It preserves Orion's core distinction:
+the agent may remain influenceable, but the **security boundary** (e.g. tool
+authorization) must stay effective — so a regression can `PASS` even while the
+agent is still influenced. Created only from an **EFFECTIVE** retest, it re-runs
+the same attack under the control (reusing the existing experiment/run/evidence
+system), compares observed vs expected security state, and returns
+**PASS / FAIL / ERROR** (missing evidence is never PASS). Execution is **manual**
+(`[ RUN REGRESSION ]` or `orion regression run ORN-REG-…`); scheduling, history,
+trends and notifications are intentionally out of scope. See
+[docs/security-regressions.md](docs/security-regressions.md).
+
 ## 7. AI agents
 
 Agents are **copilots, not oracles**: they plan and explain; metrics and
