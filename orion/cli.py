@@ -6,6 +6,7 @@
     python -m orion report <trace_id>
     python -m orion compare <baseline_trace> <hardened_trace>
     python -m orion validate scenarios/pgd_evasion.yaml
+    python -m orion assessment report ORN-ASMT-0042 --format markdown
 
 The web UI is unaffected; this is an additional interface.
 """
@@ -130,6 +131,21 @@ def _cmd_regression_run(args: argparse.Namespace) -> int:
     return 0 if res.result == "PASS" else 1
 
 
+def _cmd_assessment_report(args: argparse.Namespace) -> int:
+    """Generate the Basic Assessment Report (Markdown or JSON), writing the
+    artifact under the Assessment's own directory. Read-only over Orion's
+    existing domain state; never recomputes a security conclusion."""
+    from orion.reports import build_assessment_report, write_report
+    try:
+        report = build_assessment_report(args.assessment_id, args.artifacts)
+    except LookupError as exc:
+        print(f"Error: {exc}")
+        return 1
+    path = write_report(report, args.format, args.artifacts)
+    print(f"Wrote {args.format} report for {args.assessment_id} to {path}")
+    return 0
+
+
 def _print_metrics(metrics: dict) -> None:
     for name in ("clean_accuracy", "robust_accuracy", "attack_success_rate",
                  "perturbation_linf", "confidence_shift"):
@@ -181,6 +197,13 @@ def build_parser() -> argparse.ArgumentParser:
     r_run = reg_sub.add_parser("run", help="manually run a security regression")
     r_run.add_argument("regression_id")
     r_run.set_defaults(func=_cmd_regression_run)
+
+    p_asmt = sub.add_parser("assessment", help="Assessment-level operations")
+    asmt_sub = p_asmt.add_subparsers(dest="assessment_command", required=True)
+    a_report = asmt_sub.add_parser("report", help="generate the Basic Assessment Report")
+    a_report.add_argument("assessment_id")
+    a_report.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    a_report.set_defaults(func=_cmd_assessment_report)
 
     return parser
 
